@@ -24,6 +24,9 @@ import torchvision.models as models
 import simclr.builder
 import simclr.loader
 import simclr.losses
+import importlib.util
+import sys
+from ..lib_ssl.dataset_distill import DistilledDataset
 
 from utils import load_pretrained_model
 
@@ -287,8 +290,8 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize
         ]
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
+    train_dataset = DistilledDataset(
+        args.data,
         simclr.loader.TwoCropsTransform(transforms.Compose(augmentation)))
 
     if args.distributed:
