@@ -21,7 +21,10 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
-
+import sys
+sys.path.append('../')
+from lib_ssl.dataset_distill import DistilledDataset
+from lib_ssl.knn import get_eval_dataloader,kNN
 import moco.loader
 import moco.builder
 from moco.ssl_loader import SSLDataset
@@ -39,6 +42,9 @@ model_names = official_model_names + custom_model_names
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
+parser.add_argument('--imgdir',default='/home/jacklishufan/imagenet/ILSVRC/Data/CLS-LOC/train',
+                    help='path to imagenet')
+
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                     choices=model_names,
                     help='model architecture: ' +
@@ -109,6 +115,7 @@ parser.add_argument('--aug-plus', action='store_true',
 parser.add_argument('--cos', action='store_true',
                     help='use cosine lr schedule')
 
+import wandb
 
 def main():
     args = parser.parse_args()
@@ -289,9 +296,12 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize
         ]
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
+    train_dataset = DistilledDataset(
+        args.data,
         moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    if args.rank == 0:
+        wandb.init()
+    dataloader_knn_train,dataloader_knn_test = get_eval_dataloader(args.imgdir,args.world_size,args.rank)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -300,11 +310,15 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
+        num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,persistent_workers=True)
 
     train_start = time.time()
 
     for epoch in range(args.start_epoch, args.epochs):
+        if epoch % 500 == 0:
+            model.module.encoder_q.eval()
+            kNN(model.module.encoder_q,dataloader_knn_train,dataloader_knn_test,20,loc = 'cuda:{}'.format(args.gpu),feat_dim=args.moco_dim)
+            model.module.encoder_q.train()
         if args.distributed:
             train_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch, args)
@@ -314,7 +328,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
-            if epoch % 20 == 0 or epoch==args.epochs-1:
+            if epoch % 5000 == 0 or epoch==args.epochs-1:
                 save_checkpoint({
                     'epoch': epoch + 1,
                     'arch': args.arch,
@@ -443,7 +457,7 @@ def accuracy(output, target, topk=(1,)):
 
         res = []
         for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
