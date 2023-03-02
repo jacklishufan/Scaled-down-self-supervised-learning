@@ -19,14 +19,17 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-import torchvision.models as models
 
+import torchvision.models as models
+import wandb
 import simclr.builder
 import simclr.loader
 import simclr.losses
 import importlib.util
 import sys
-from ..lib_ssl.dataset_distill import DistilledDataset
+sys.path.append('../')
+from lib_ssl.knn import get_eval_dataloader,kNN
+from lib_ssl.dataset_distill import DistilledDataset
 
 from utils import load_pretrained_model
 
@@ -45,6 +48,8 @@ model_names = sorted(name for name in models.__dict__
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
+parser.add_argument('--imgdir',default='/home/jacklishufan/imagenet/ILSVRC/Data/CLS-LOC/train',
+                    help='path to imagenet')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                     choices=model_names,
                     help='model architecture: ' +
@@ -293,6 +298,10 @@ def main_worker(gpu, ngpus_per_node, args):
     train_dataset = DistilledDataset(
         args.data,
         simclr.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+    if args.rank == 0:
+        wandb.init()
+    dataloader_knn_train,dataloader_knn_test = get_eval_dataloader(args.imgdir,args.world_size,args.rank)
+
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -306,6 +315,10 @@ def main_worker(gpu, ngpus_per_node, args):
     train_start = time.time()
 
     for epoch in range(args.start_epoch, args.epochs):
+        if epoch % 500 == 0:
+            model.module.encoder_q.eval()
+            kNN(model.module.encoder_q,dataloader_knn_train,dataloader_knn_test,20,loc = 'cuda:{}'.format(args.gpu),feat_dim=args.simclr_dim)
+            model.module.encoder_q.train()
         if args.distributed:
             train_sampler.set_epoch(epoch)
         #adjust_learning_rate(optimizer, epoch, args)
